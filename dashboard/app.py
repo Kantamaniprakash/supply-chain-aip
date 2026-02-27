@@ -106,10 +106,15 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-PLOTLY_DARK = dict(
-    paper_bgcolor="#0d1117", plot_bgcolor="#161b22",
-    font_color="#8b949e", gridcolor="#21262d",
-)
+PLOTLY_DARK = dict(paper_bgcolor="#0d1117", plot_bgcolor="#161b22", font_color="#8b949e")
+_GRID = "#21262d"
+
+def _dl(fig, **kw):
+    """Apply dark theme layout + axis gridcolor."""
+    fig.update_layout(**PLOTLY_DARK, **kw)
+    fig.update_xaxes(gridcolor=_GRID)
+    fig.update_yaxes(gridcolor=_GRID)
+    return fig
 
 # ── Data generation + model training (cached — runs once) ────────────────────
 @st.cache_resource(show_spinner="Training ML models on synthetic data…")
@@ -258,8 +263,8 @@ if page == "🏠 Command Center":
                      color="Tier", color_discrete_map=TIER_COLOR,
                      hole=.55)
         fig.update_traces(textinfo="percent+label", textfont_size=12)
-        fig.update_layout(**PLOTLY_DARK, height=300, showlegend=False,
-                          margin=dict(t=10, b=10, l=10, r=10))
+        _dl(fig, height=300, showlegend=False,
+            margin=dict(t=10, b=10, l=10, r=10))
         st.plotly_chart(fig, use_container_width=True)
 
     with col_r:
@@ -274,9 +279,9 @@ if page == "🏠 Command Center":
                                       (0.75,"#f0883e","HIGH"), (0.90,"#f85149","CRIT")]:
             fig2.add_vline(x=thresh, line_dash="dash", line_color=color,
                            annotation_text=label, annotation_font_color=color)
-        fig2.update_layout(**PLOTLY_DARK, height=300, xaxis_title="P(Disruption | t+30d)",
-                           yaxis_title="Supplier Count", margin=dict(t=10,b=30,l=40,r=10),
-                           showlegend=False)
+        _dl(fig2, height=300, xaxis_title="P(Disruption | t+30d)",
+            yaxis_title="Supplier Count", margin=dict(t=10,b=30,l=40,r=10),
+            showlegend=False)
         st.plotly_chart(fig2, use_container_width=True)
 
     st.markdown("---")
@@ -335,12 +340,7 @@ elif page == "⚠️ Supplier Risk":
         disp.columns = ["Supplier","P(Disrupt)","Tier","Geo Risk","Fin Risk","On-Time 90d","Disrupt Rate 90d"]
         for col in ["P(Disrupt)","Geo Risk","Fin Risk","On-Time 90d","Disrupt Rate 90d"]:
             disp[col] = disp[col].round(3)
-        st.dataframe(
-            disp.style.background_gradient(subset=["P(Disrupt)"], cmap="RdYlGn_r")
-                      .background_gradient(subset=["Geo Risk"],    cmap="YlOrRd")
-                      .background_gradient(subset=["On-Time 90d"], cmap="RdYlGn"),
-            use_container_width=True, hide_index=True, height=420,
-        )
+        st.dataframe(disp, use_container_width=True, hide_index=True, height=420)
 
     with col_r:
         st.markdown("<div class='sec-head'>// SHAP Feature Attribution — Top Supplier</div>",
@@ -353,9 +353,9 @@ elif page == "⚠️ Supplier Risk":
             orientation="h", marker_color=colors,
             text=top_sup_shap["shap_value"].round(3), textposition="outside",
         ))
-        fig_shap.update_layout(**PLOTLY_DARK, height=380,
-                               xaxis_title="SHAP Value (impact on risk score)",
-                               margin=dict(t=10, b=30, l=20, r=60))
+        _dl(fig_shap, height=380,
+            xaxis_title="SHAP Value (impact on risk score)",
+            margin=dict(t=10, b=30, l=20, r=60))
         st.plotly_chart(fig_shap, use_container_width=True)
 
     st.markdown("---")
@@ -371,7 +371,7 @@ elif page == "⚠️ Supplier Risk":
         labels={feat_col: feat_col.replace("_"," ").title(),
                 "disruption_probability": "P(Disruption)"},
     )
-    fig_feat.update_layout(**PLOTLY_DARK, margin=dict(t=10,b=30,l=40,r=10))
+    _dl(fig_feat, margin=dict(t=10,b=30,l=40,r=10))
     st.plotly_chart(fig_feat, use_container_width=True)
 
 
@@ -401,9 +401,9 @@ elif page == "🔍 Anomaly Alerts":
                                    nbinsx=30, name="Anomaly", marker_color="#f85149", opacity=.7))
         fig.add_vline(x=0.60, line_dash="dash", line_color="#f0883e",
                       annotation_text="Threshold", annotation_font_color="#f0883e")
-        fig.update_layout(**PLOTLY_DARK, barmode="overlay", height=300,
-                          xaxis_title="Ensemble Anomaly Score",
-                          margin=dict(t=10,b=30,l=40,r=10))
+        _dl(fig, barmode="overlay", height=300,
+            xaxis_title="Ensemble Anomaly Score",
+            margin=dict(t=10,b=30,l=40,r=10))
         st.plotly_chart(fig, use_container_width=True)
 
     with col_r:
@@ -418,7 +418,7 @@ elif page == "🔍 Anomaly Alerts":
         )
         fig2.add_vline(x=0.5, line_dash="dash", line_color="#30363d")
         fig2.add_hline(y=0.5, line_dash="dash", line_color="#30363d")
-        fig2.update_layout(**PLOTLY_DARK, margin=dict(t=10,b=30,l=40,r=10))
+        _dl(fig2, margin=dict(t=10,b=30,l=40,r=10))
         st.plotly_chart(fig2, use_container_width=True)
 
     st.markdown("---")
@@ -429,10 +429,7 @@ elif page == "🔍 Anomaly Alerts":
     disp_anom.columns = ["Supplier","Ensemble Score","Isolation Forest","ECOD"]
     for c in ["Ensemble Score","Isolation Forest","ECOD"]:
         disp_anom[c] = disp_anom[c].round(4)
-    st.dataframe(
-        disp_anom.style.background_gradient(subset=["Ensemble Score"], cmap="RdYlGn_r"),
-        use_container_width=True, hide_index=True,
-    )
+    st.dataframe(disp_anom, use_container_width=True, hide_index=True)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -467,9 +464,9 @@ elif page == "📊 Monte Carlo VaR":
                       annotation_text="VaR(95%)", annotation_font_color="#f0883e")
         fig.add_vline(x=mc.cvar_95/1e6, line_dash="dash", line_color="#f85149",
                       annotation_text="CVaR(95%)", annotation_font_color="#f85149")
-        fig.update_layout(**PLOTLY_DARK, height=330,
-                          xaxis_title="Simulated Loss ($M)", yaxis_title="Frequency",
-                          margin=dict(t=10,b=30,l=40,r=10))
+        _dl(fig, height=330,
+            xaxis_title="Simulated Loss ($M)", yaxis_title="Frequency",
+            margin=dict(t=10,b=30,l=40,r=10))
         st.plotly_chart(fig, use_container_width=True)
 
     with col_r:
@@ -479,8 +476,8 @@ elif page == "📊 Monte Carlo VaR":
                       orientation="h", color="tail_frequency",
                       color_continuous_scale=["#1f6feb","#f0883e","#f85149"],
                       labels={"tail_frequency":"Tail Freq.","supplier_id":"Supplier"})
-        fig2.update_layout(**PLOTLY_DARK, height=330, showlegend=False,
-                           coloraxis_showscale=False, margin=dict(t=10,b=30,l=20,r=10))
+        _dl(fig2, height=330, showlegend=False,
+            coloraxis_showscale=False, margin=dict(t=10,b=30,l=20,r=10))
         st.plotly_chart(fig2, use_container_width=True)
 
     st.markdown("---")
@@ -550,10 +547,10 @@ elif page == "📈 Demand Forecast":
     if len(actuals) >= h:
         fig.add_trace(go.Scatter(x=days, y=actuals[:h],
                                  line=dict(color="#39d353",width=2,dash="dash"), name="Actuals"))
-    fig.update_layout(**PLOTLY_DARK, height=380, xaxis_title="Forecast Day",
-                      yaxis_title="Demand (units)",
-                      legend=dict(orientation="h", y=1.1),
-                      margin=dict(t=30,b=40,l=50,r=20))
+    _dl(fig, height=380, xaxis_title="Forecast Day",
+        yaxis_title="Demand (units)",
+        legend=dict(orientation="h", y=1.1),
+        margin=dict(t=30,b=40,l=50,r=20))
     st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("---")

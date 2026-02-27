@@ -10,6 +10,30 @@
 
 ---
 
+## Dashboard Preview
+
+### Command Center
+Real-time risk overview — KPI metrics, risk tier distribution, and disruption probability histogram across 500+ suppliers.
+
+![Command Center](assets/screenshots/01_command_center.png)
+
+### Monte Carlo Value-at-Risk
+Gaussian Copula simulation (N=20,000) quantifying portfolio-level supply chain loss with VaR(95%) and CVaR markers.
+
+![Monte Carlo VaR](assets/screenshots/04_monte_carlo.png)
+
+### Anomaly Detection
+Isolation Forest + ECOD ensemble score distribution and IF vs ECOD comparison scatter, with live anomaly table.
+
+![Anomaly Alerts](assets/screenshots/03_anomaly_alerts.png)
+
+### AIP Intelligence Agent
+Natural language interface wired to live model outputs — query risk scores, VaR exposure, and anomalies in plain English.
+
+![AIP Agent](assets/screenshots/05_aip_agent.png)
+
+---
+
 ## Abstract
 
 This project implements a production-grade, multi-layer AI system for supply chain disruption intelligence on Palantir Foundry. The architecture combines a **medallion data pipeline** (Bronze → Silver → Gold) with a **five-model ML ensemble**, **supplier network graph analytics**, **Monte Carlo Value-at-Risk simulation**, and a **Palantir AIP agent** that connects GPT-4o to live Ontology objects for autonomous root-cause analysis and corrective action.
