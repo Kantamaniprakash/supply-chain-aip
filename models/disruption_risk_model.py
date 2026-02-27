@@ -1,155 +1,285 @@
 """
 Supplier Disruption Risk Scorer
 ================================
-XGBoost binary classifier predicting the probability that a supplier
-will cause a disruption event within the next 30 days.
+XGBoost binary classifier with Bayesian hyperparameter optimisation (Optuna),
+Platt scaling calibration, and SHAP TreeExplainer for per-prediction attribution.
 
-Features are sourced from the Foundry Gold layer (supply_chain_risk_master).
-This module is portable — runs standalone or as a Foundry Code Workbook.
+Predicts P(disruption | supplier, t+30 days) using temporal rolling features,
+geopolitical signals, network centrality, and financial distress proxies.
 
-Author: Satya Sai Prakash Kantamani
+Reference: Chen & Guestrin (2016) XGBoost; Lundberg & Lee (2017) SHAP.
 """
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 import xgboost as xgb
-from sklearn.model_selection import StratifiedKFold, cross_val_score
-from sklearn.metrics import roc_auc_score, classification_report, confusion_matrix
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import Pipeline
+import shap
+import optuna
 import warnings
+from dataclasses import dataclass, field
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.model_selection import StratifiedKFold, cross_val_score
+from sklearn.metrics import (
+    roc_auc_score, average_precision_score,
+    classification_report, brier_score_loss,
+)
+from sklearn.preprocessing import StandardScaler
+
 warnings.filterwarnings("ignore")
+optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
-# ── Feature schema ──────────────────────────────────────────────────────────
+# ── Feature schema ─────────────────────────────────────────────────────────
 FEATURES = [
-    "rolling_on_time_rate",       # 90-day on-time delivery rate
-    "rolling_avg_delay_days",     # avg delay in days (90d window)
-    "disruption_rate",            # % shipments delayed/lost (90d)
-    "delay_volatility",           # std dev of delay days
-    "geo_risk_score",             # country-level geopolitical risk (0-1)
-    "political_stability_index",  # World Bank political stability
-    "financial_risk_score",       # supplier financial health (0-1, inverted)
-    "lead_time_variance",         # delay_volatility / avg_delay
-    "supplier_concentration_risk",# spend share normalised
-    "order_volume_90d",           # order count (90d)
+    # Temporal delivery performance
+    "on_time_rate_7d", "on_time_rate_30d", "on_time_rate_90d",
+    "on_time_rate_ewm_alpha02",          # exponentially weighted (α=0.2)
+    "avg_delay_days_30d", "avg_delay_days_90d",
+    "delay_std_90d",
+    "js_divergence_delay_dist",          # Jensen-Shannon divergence vs 1yr baseline
+
+    # Disruption history
+    "disruption_rate_90d",
+    "days_since_last_disruption",
+    "consecutive_on_time_streak",
+
+    # Geopolitical & macro
+    "geo_risk_score",                    # composite index (0–1)
+    "political_stability_wgi",           # World Bank WGI indicator
+    "trade_conflict_intensity",          # bilateral trade dispute score
+    "commodity_price_volatility_30d",    # relevant commodity index volatility
+
+    # Financial health
+    "financial_risk_score",              # Altman Z-score proxy (inverted, 0–1)
+    "payment_delay_rate_90d",            # % invoices paid late
+
+    # Network (from GraphSAGE)
+    "network_pagerank",                  # supplier importance in dependency graph
+    "second_order_contagion_score",      # P(disruption | connected supplier disrupted)
+    "supply_concentration_hhi",          # Herfindahl-Hirschman spend concentration
+
+    # Lead time
+    "lead_time_variance_ratio",          # std/mean lead time
+    "lead_time_trend_slope",             # OLS slope of lead time over 90d
+
+    # Logistics
+    "port_congestion_score",             # origin port congestion index
+    "transit_route_risk",                # historical disruption rate on primary route
+
+    # Volume
+    "order_volume_30d", "order_volume_90d",
+    "spend_share_pct",                   # % of total procurement
 ]
-TARGET = "disruption_label"       # 1 = disruption occurred within 30 days
+TARGET = "disruption_label"
+
+
+@dataclass
+class ModelMetrics:
+    cv_auc: float = 0.0
+    cv_auc_std: float = 0.0
+    cv_ap: float = 0.0
+    brier_score: float = 0.0
+    best_params: dict = field(default_factory=dict)
 
 
 class DisruptionRiskModel:
-    def __init__(self):
-        self.model = xgb.XGBClassifier(
-            n_estimators=300,
-            max_depth=5,
-            learning_rate=0.05,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            min_child_weight=3,
-            scale_pos_weight=4,        # handles class imbalance (~20% positive)
-            eval_metric="auc",
-            random_state=42,
-            use_label_encoder=False,
-        )
-        self.feature_names = FEATURES
-        self.threshold = 0.45          # tuned for precision/recall balance
+    """
+    XGBoost disruption risk scorer with:
+    - Bayesian HPO via Optuna (TPE sampler, 200 trials)
+    - Platt scaling for probability calibration
+    - SHAP TreeExplainer for feature attribution
+    - Stratified 5-fold cross-validation
+    """
 
-    def train(self, df: pd.DataFrame) -> dict:
-        X = df[FEATURES].fillna(0)
+    def __init__(self, n_optuna_trials: int = 200, calibrate: bool = True):
+        self.n_optuna_trials = n_optuna_trials
+        self.calibrate = calibrate
+        self.model = None
+        self.calibrated_model = None
+        self.explainer = None
+        self.metrics = ModelMetrics()
+        self.threshold = 0.45
+
+    # ── Bayesian HPO ──────────────────────────────────────────────────────
+    def _optuna_objective(self, trial, X, y):
+        params = {
+            "n_estimators":       trial.suggest_int("n_estimators", 100, 600),
+            "max_depth":          trial.suggest_int("max_depth", 3, 8),
+            "learning_rate":      trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
+            "subsample":          trial.suggest_float("subsample", 0.6, 1.0),
+            "colsample_bytree":   trial.suggest_float("colsample_bytree", 0.5, 1.0),
+            "min_child_weight":   trial.suggest_int("min_child_weight", 1, 10),
+            "reg_alpha":          trial.suggest_float("reg_alpha", 1e-4, 10.0, log=True),
+            "reg_lambda":         trial.suggest_float("reg_lambda", 1e-4, 10.0, log=True),
+            "scale_pos_weight":   trial.suggest_float("scale_pos_weight", 2.0, 8.0),
+            "eval_metric": "auc",
+            "use_label_encoder": False,
+            "random_state": 42,
+        }
+        clf = xgb.XGBClassifier(**params)
+        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        scores = cross_val_score(clf, X, y, cv=cv, scoring="roc_auc")
+        return scores.mean()
+
+    def train(self, df: pd.DataFrame) -> ModelMetrics:
+        X = df[FEATURES].fillna(0).astype(float)
         y = df[TARGET]
 
-        # ── Stratified 5-fold CV ─────────────────────────────────────────────
-        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-        cv_scores = cross_val_score(self.model, X, y, cv=cv, scoring="roc_auc")
+        print(f"[DisruptionRiskModel] Training on {len(df):,} samples | "
+              f"positive rate: {y.mean():.2%}")
 
-        # ── Full fit ─────────────────────────────────────────────────────────
-        self.model.fit(
-            X, y,
-            eval_set=[(X, y)],
-            verbose=False,
+        # ── Bayesian HPO ──────────────────────────────────────────────────
+        print(f"[DisruptionRiskModel] Running Optuna HPO ({self.n_optuna_trials} trials)...")
+        study = optuna.create_study(
+            direction="maximize",
+            sampler=optuna.samplers.TPESampler(seed=42),
+            pruner=optuna.pruners.MedianPruner(n_warmup_steps=10),
         )
+        study.optimize(
+            lambda trial: self._optuna_objective(trial, X, y),
+            n_trials=self.n_optuna_trials,
+            show_progress_bar=False,
+        )
+        best_params = study.best_params
+        best_params.update({"eval_metric": "auc", "use_label_encoder": False,
+                            "random_state": 42})
+        self.metrics.best_params = best_params
+        print(f"[DisruptionRiskModel] Best AUC: {study.best_value:.4f} | "
+              f"Params: {best_params}")
 
-        metrics = {
-            "cv_auc_mean": cv_scores.mean(),
-            "cv_auc_std":  cv_scores.std(),
-            "n_train":     len(df),
-            "positive_rate": y.mean(),
-        }
-        print(f"[DisruptionRiskModel] CV AUC: {cv_scores.mean():.4f} ± {cv_scores.std():.4f}")
-        return metrics
+        # ── Full fit ──────────────────────────────────────────────────────
+        self.model = xgb.XGBClassifier(**best_params)
+        self.model.fit(X, y, verbose=False)
 
-    def predict_proba(self, df: pd.DataFrame) -> pd.Series:
-        X = df[FEATURES].fillna(0)
-        proba = self.model.predict_proba(X)[:, 1]
-        return pd.Series(proba, index=df.index, name="disruption_probability")
+        # ── Platt calibration ─────────────────────────────────────────────
+        if self.calibrate:
+            self.calibrated_model = CalibratedClassifierCV(
+                self.model, cv=5, method="sigmoid"
+            )
+            self.calibrated_model.fit(X, y)
+
+        # ── SHAP explainer ────────────────────────────────────────────────
+        self.explainer = shap.TreeExplainer(self.model)
+
+        # ── Final CV metrics ──────────────────────────────────────────────
+        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        auc_scores = cross_val_score(self.model, X, y, cv=cv, scoring="roc_auc")
+        ap_scores  = cross_val_score(self.model, X, y, cv=cv,
+                                     scoring="average_precision")
+
+        self.metrics.cv_auc     = auc_scores.mean()
+        self.metrics.cv_auc_std = auc_scores.std()
+        self.metrics.cv_ap      = ap_scores.mean()
+
+        y_prob = self.predict_proba(df)
+        self.metrics.brier_score = brier_score_loss(y, y_prob)
+
+        print(f"\n[Results] CV AUC: {self.metrics.cv_auc:.4f} ± {self.metrics.cv_auc_std:.4f}"
+              f" | CV AP: {self.metrics.cv_ap:.4f}"
+              f" | Brier: {self.metrics.brier_score:.4f}")
+        return self.metrics
+
+    # ── Inference ─────────────────────────────────────────────────────────
+    def predict_proba(self, df: pd.DataFrame) -> np.ndarray:
+        X = df[FEATURES].fillna(0).astype(float)
+        m = self.calibrated_model if self.calibrate and self.calibrated_model else self.model
+        return m.predict_proba(X)[:, 1]
 
     def score_suppliers(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Return enriched DataFrame with risk scores and tiers."""
-        df = df.copy()
-        df["disruption_probability"] = self.predict_proba(df)
-        df["risk_tier"] = pd.cut(
-            df["disruption_probability"],
+        out = df.copy()
+        out["disruption_probability"] = self.predict_proba(df)
+        out["risk_tier"] = pd.cut(
+            out["disruption_probability"],
             bins=[0, 0.25, 0.50, 0.75, 1.0],
             labels=["LOW", "MEDIUM", "HIGH", "CRITICAL"],
         )
-        df["rank"] = df["disruption_probability"].rank(ascending=False).astype(int)
-        return df.sort_values("disruption_probability", ascending=False)
+        out["rank"] = out["disruption_probability"].rank(ascending=False).astype(int)
+        return out.sort_values("disruption_probability", ascending=False)
 
-    def feature_importance(self) -> pd.DataFrame:
-        imp = self.model.feature_importances_
-        return pd.DataFrame({
-            "feature": self.feature_names,
-            "importance": imp,
-        }).sort_values("importance", ascending=False)
+    # ── SHAP explainability ───────────────────────────────────────────────
+    def explain(self, df: pd.DataFrame, top_k: int = 5) -> pd.DataFrame:
+        """
+        Returns per-row SHAP attribution for top-k features.
+        Payload is sent to AIP agent for natural language narrative generation.
+        """
+        X = df[FEATURES].fillna(0).astype(float)
+        shap_values = self.explainer.shap_values(X)
 
+        records = []
+        for i in range(len(df)):
+            sv = shap_values[i]
+            top_idx = np.argsort(np.abs(sv))[-top_k:][::-1]
+            for j in top_idx:
+                records.append({
+                    "row_idx":    i,
+                    "supplier_id": df.iloc[i].get("supplier_id", i),
+                    "feature":    FEATURES[j],
+                    "shap_value": sv[j],
+                    "direction":  "↑ risk" if sv[j] > 0 else "↓ risk",
+                })
+        return pd.DataFrame(records)
+
+    # ── Evaluation ────────────────────────────────────────────────────────
     def evaluate(self, df: pd.DataFrame) -> None:
-        X = df[FEATURES].fillna(0)
+        X = df[FEATURES].fillna(0).astype(float)
         y = df[TARGET]
         y_prob = self.predict_proba(df)
         y_pred = (y_prob >= self.threshold).astype(int)
 
-        print("\n── Disruption Risk Model Evaluation ──")
-        print(f"ROC-AUC:  {roc_auc_score(y, y_prob):.4f}")
+        print("\n══════════════════════════════════════════")
+        print("  Disruption Risk Model — Evaluation")
+        print("══════════════════════════════════════════")
+        print(f"  ROC-AUC:              {roc_auc_score(y, y_prob):.4f}")
+        print(f"  Average Precision:    {average_precision_score(y, y_prob):.4f}")
+        print(f"  Brier Score:          {brier_score_loss(y, y_prob):.4f}")
+        print(f"  Decision Threshold:   {self.threshold}")
         print("\nClassification Report:")
-        print(classification_report(y, y_pred, target_names=["No Disruption", "Disruption"]))
-        print("\nTop Feature Importances:")
-        print(self.feature_importance().head(6).to_string(index=False))
+        print(classification_report(y, y_pred,
+                                    target_names=["No Disruption", "Disruption"]))
+        print("\nTop 10 Feature Importances (SHAP mean |value|):")
+        sv = self.explainer.shap_values(df[FEATURES].fillna(0).astype(float))
+        fi = pd.DataFrame({
+            "feature":          FEATURES,
+            "mean_abs_shap":    np.abs(sv).mean(axis=0),
+        }).sort_values("mean_abs_shap", ascending=False)
+        print(fi.head(10).to_string(index=False))
 
 
-# ── Standalone run ─────────────────────────────────────────────────────────
+# ── Standalone demo ────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # Simulate Foundry Gold layer output for local testing
     np.random.seed(42)
-    n = 2000
+    N = 3000
+    df = pd.DataFrame({f: np.random.rand(N) for f in FEATURES})
 
-    df_sim = pd.DataFrame({
-        "supplier_id":                np.arange(n),
-        "rolling_on_time_rate":       np.random.beta(8, 2, n),
-        "rolling_avg_delay_days":     np.random.exponential(2, n),
-        "disruption_rate":            np.random.beta(2, 8, n),
-        "delay_volatility":           np.random.exponential(1.5, n),
-        "geo_risk_score":             np.random.uniform(0, 1, n),
-        "political_stability_index":  np.random.uniform(0, 1, n),
-        "financial_risk_score":       np.random.beta(3, 7, n),
-        "lead_time_variance":         np.random.exponential(0.5, n),
-        "supplier_concentration_risk":np.random.uniform(0, 1, n),
-        "order_volume_90d":           np.random.poisson(50, n).astype(float),
-    })
+    # Correlated features
+    df["on_time_rate_90d"]         = np.random.beta(8, 2, N)
+    df["on_time_rate_30d"]         = df["on_time_rate_90d"] * np.random.uniform(0.9, 1.1, N)
+    df["on_time_rate_7d"]          = df["on_time_rate_30d"] * np.random.uniform(0.85, 1.15, N)
+    df["disruption_rate_90d"]      = np.random.beta(2, 10, N)
+    df["geo_risk_score"]           = np.random.uniform(0, 1, N)
+    df["financial_risk_score"]     = np.random.beta(3, 7, N)
+    df["network_pagerank"]         = np.random.exponential(0.1, N)
 
-    # Synthetic label: high risk = more likely disruption
     risk_signal = (
-        0.4 * df_sim["geo_risk_score"] +
-        0.3 * df_sim["disruption_rate"] +
-        0.3 * (1 - df_sim["rolling_on_time_rate"])
+        0.30 * df["geo_risk_score"]
+        + 0.25 * df["disruption_rate_90d"]
+        + 0.25 * (1 - df["on_time_rate_90d"])
+        + 0.10 * df["financial_risk_score"]
+        + 0.10 * df["network_pagerank"].clip(0, 1)
     )
-    df_sim[TARGET] = (risk_signal + np.random.normal(0, 0.1, n) > 0.45).astype(int)
+    df[TARGET] = (risk_signal + np.random.normal(0, 0.08, N) > 0.40).astype(int)
+    df["supplier_id"] = [f"SUP-{i:04d}" for i in range(N)]
 
-    print(f"Dataset: {n} suppliers | {df_sim[TARGET].mean():.1%} positive rate\n")
+    print(f"Simulated dataset: {N} suppliers | positive rate: {df[TARGET].mean():.2%}\n")
 
-    model = DisruptionRiskModel()
-    model.train(df_sim)
-    model.evaluate(df_sim)
+    model = DisruptionRiskModel(n_optuna_trials=30)  # reduce for demo
+    model.train(df)
+    model.evaluate(df)
 
-    scored = model.score_suppliers(df_sim).head(10)
-    print("\nTop 10 Highest Risk Suppliers:")
-    print(scored[["supplier_id", "disruption_probability", "risk_tier", "rank"]].to_string(index=False))
+    top5 = model.score_suppliers(df).head(5)
+    print("\nTop 5 Highest-Risk Suppliers:")
+    print(top5[["supplier_id", "disruption_probability", "risk_tier"]].to_string(index=False))
+
+    print("\nSHAP Attribution — Top Supplier:")
+    shap_df = model.explain(top5.head(1))
+    print(shap_df[["feature", "shap_value", "direction"]].to_string(index=False))

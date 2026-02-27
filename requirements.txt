@@ -1,9 +1,36 @@
+# ── Core ML ──────────────────────────────────────────────────────────────────
 xgboost==2.0.3
 scikit-learn==1.4.2
-pandas==2.2.2
-numpy==1.26.4
+optuna==3.6.1
+shap==0.45.1
+
+# ── Deep Learning ─────────────────────────────────────────────────────────────
 torch==2.3.0
+torch-geometric==2.5.3
+
+# ── Statistical Computing ────────────────────────────────────────────────────
+numpy==1.26.4
+scipy==1.13.0
+pandas==2.2.2
+
+# ── Data Pipeline ─────────────────────────────────────────────────────────────
+pyspark==3.5.1
+
+# ── Visualisation ─────────────────────────────────────────────────────────────
 matplotlib==3.9.0
 seaborn==0.13.2
-pyspark==3.5.1
+plotly==5.22.0
+
+# ── Notebook ──────────────────────────────────────────────────────────────────
+jupyter==1.0.0
+ipywidgets==8.1.3
+
+# ── Palantir Foundry SDK (install via internal Palantir PyPI mirror) ──────────
+# transforms
+# foundry-dev-tools
+# aip-logic
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
 python-dotenv==1.0.1
+tqdm==4.66.4
+joblib==1.4.2
