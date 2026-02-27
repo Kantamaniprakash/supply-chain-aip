@@ -17,11 +17,11 @@ import shap
 import optuna
 import warnings
 from dataclasses import dataclass, field
-from sklearn.calibration import CalibratedClassifierCV
+from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.metrics import (
     roc_auc_score, average_precision_score,
-    classification_report, brier_score_loss,
+    classification_report, brier_score_loss, make_scorer,
 )
 from sklearn.preprocessing import StandardScaler
 
@@ -95,7 +95,7 @@ class DisruptionRiskModel:
         self.n_optuna_trials = n_optuna_trials
         self.calibrate = calibrate
         self.model = None
-        self.calibrated_model = None
+        self.calibrated_model = None   # LogisticRegression Platt scaler
         self.explainer = None
         self.metrics = ModelMetrics()
         self.threshold = 0.45
@@ -112,14 +112,16 @@ class DisruptionRiskModel:
             "reg_alpha":          trial.suggest_float("reg_alpha", 1e-4, 10.0, log=True),
             "reg_lambda":         trial.suggest_float("reg_lambda", 1e-4, 10.0, log=True),
             "scale_pos_weight":   trial.suggest_float("scale_pos_weight", 2.0, 8.0),
-            "eval_metric": "auc",
-            "use_label_encoder": False,
             "random_state": 42,
         }
         clf = xgb.XGBClassifier(**params)
         cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-        scores = cross_val_score(clf, X, y, cv=cv, scoring="roc_auc")
-        return scores.mean()
+        scores = []
+        for ti, vi in cv.split(X, y):
+            clf.fit(X.iloc[ti], y.iloc[ti])
+            p = clf.predict_proba(X.iloc[vi])[:, 1]
+            scores.append(roc_auc_score(y.iloc[vi], p))
+        return float(np.mean(scores))
 
     def train(self, df: pd.DataFrame) -> ModelMetrics:
         X = df[FEATURES].fillna(0).astype(float)
@@ -141,8 +143,7 @@ class DisruptionRiskModel:
             show_progress_bar=False,
         )
         best_params = study.best_params
-        best_params.update({"eval_metric": "auc", "use_label_encoder": False,
-                            "random_state": 42})
+        best_params.update({"random_state": 42})
         self.metrics.best_params = best_params
         print(f"[DisruptionRiskModel] Best AUC: {study.best_value:.4f} | "
               f"Params: {best_params}")
@@ -151,25 +152,35 @@ class DisruptionRiskModel:
         self.model = xgb.XGBClassifier(**best_params)
         self.model.fit(X, y, verbose=False)
 
-        # ── Platt calibration ─────────────────────────────────────────────
+        # ── Platt calibration (manual — sklearn 1.7 compatible) ───────────
         if self.calibrate:
-            self.calibrated_model = CalibratedClassifierCV(
-                self.model, cv=5, method="sigmoid"
-            )
-            self.calibrated_model.fit(X, y)
+            # Get out-of-fold raw probabilities, fit logistic scaler on top
+            cv_c = StratifiedKFold(n_splits=5, shuffle=True, random_state=0)
+            oof = np.zeros(len(X))
+            for ti, vi in cv_c.split(X, y):
+                tmp = xgb.XGBClassifier(**best_params)
+                tmp.fit(X.iloc[ti], y.iloc[ti])
+                oof[vi] = tmp.predict_proba(X.iloc[vi])[:, 1]
+            self.calibrated_model = LogisticRegression()
+            self.calibrated_model.fit(oof.reshape(-1, 1), y)
 
         # ── SHAP explainer ────────────────────────────────────────────────
         self.explainer = shap.TreeExplainer(self.model)
 
         # ── Final CV metrics ──────────────────────────────────────────────
         cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-        auc_scores = cross_val_score(self.model, X, y, cv=cv, scoring="roc_auc")
-        ap_scores  = cross_val_score(self.model, X, y, cv=cv,
-                                     scoring="average_precision")
+        auc_scores, ap_scores = [], []
+        for ti, vi in cv.split(X, y):
+            self.model.fit(X.iloc[ti], y.iloc[ti])
+            p = self.model.predict_proba(X.iloc[vi])[:, 1]
+            auc_scores.append(roc_auc_score(y.iloc[vi], p))
+            ap_scores.append(average_precision_score(y.iloc[vi], p))
+        # Refit on full data after CV
+        self.model.fit(X, y, verbose=False)
 
-        self.metrics.cv_auc     = auc_scores.mean()
-        self.metrics.cv_auc_std = auc_scores.std()
-        self.metrics.cv_ap      = ap_scores.mean()
+        self.metrics.cv_auc     = float(np.mean(auc_scores))
+        self.metrics.cv_auc_std = float(np.std(auc_scores))
+        self.metrics.cv_ap      = float(np.mean(ap_scores))
 
         y_prob = self.predict_proba(df)
         self.metrics.brier_score = brier_score_loss(y, y_prob)
@@ -182,8 +193,10 @@ class DisruptionRiskModel:
     # ── Inference ─────────────────────────────────────────────────────────
     def predict_proba(self, df: pd.DataFrame) -> np.ndarray:
         X = df[FEATURES].fillna(0).astype(float)
-        m = self.calibrated_model if self.calibrate and self.calibrated_model else self.model
-        return m.predict_proba(X)[:, 1]
+        raw = self.model.predict_proba(X)[:, 1]
+        if self.calibrate and self.calibrated_model is not None:
+            return self.calibrated_model.predict_proba(raw.reshape(-1, 1))[:, 1]
+        return raw
 
     def score_suppliers(self, df: pd.DataFrame) -> pd.DataFrame:
         out = df.copy()
