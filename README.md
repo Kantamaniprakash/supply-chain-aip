@@ -282,6 +282,14 @@ RiskEvent
 
 ## Results
 
+**How these numbers were produced:** every model in this repo trains and evaluates on
+**synthetic data** generated in-script with a fixed seed (`np.random.seed(42)`) — there are
+no real supplier, ERP, or logistics feeds. The model-validation metrics quoted in the ML
+sections above (AUC, MAPE, F1) are computed by the committed training scripts against that
+synthetic distribution. The business-impact figures below compare against a simulated
+threshold-based-alerting baseline and are **illustrative of the intended methodology**, not
+measured production outcomes.
+
 | Metric | Baseline | This System | Improvement |
 |---|---|---|---|
 | Disruption detection lead time | 4 hours post-event | 68 hours pre-event | **+72 hours** |
@@ -293,6 +301,26 @@ RiskEvent
 | Annual avoided disruption cost (est.) | — | $8.7M | — |
 
 > **Disclaimer:** The figures above (detection lead time, triage time, stockout reduction, avoided cost, etc.) are **simulated/illustrative** — they are derived from the project's synthetic data and simulation pipeline to demonstrate the intended methodology, and are **not measured production outcomes**.
+
+### Limitations
+
+- **Synthetic data only.** All training, evaluation, and dashboard data is generated with
+  seeded NumPy inside each script. Model metrics measure behaviour on that synthetic
+  distribution — real-world supplier data would be noisier, drift over time, and likely
+  degrade every reported score.
+- **No live Foundry or GPT-4o connection.** The `transforms/` and `aip/` modules target
+  Palantir Foundry APIs but this repo runs fully standalone. The dashboard's "AIP Agent"
+  tab serves keyword-matched, template-based responses populated from live model outputs —
+  it does not call an LLM, so agent cost, latency, and hallucination behaviour are unquantified.
+- **Single-machine scale.** The PySpark medallion transforms are written for Foundry
+  Pipeline Builder but have only been exercised locally on small synthetic tables — nothing
+  is validated on a distributed cluster or at production data volume.
+- **Business-impact figures are extrapolated.** Detection lead time, triage-time reduction,
+  and avoided-cost estimates come from the simulation pipeline, not from a deployment with
+  real incidents; treat them as design targets rather than results.
+- **No backtesting against historical disruptions.** VaR/CVaR outputs are internally
+  consistent with the Gaussian-copula model but have not been validated against real
+  disruption events (e.g. Suez 2021, COVID-era port congestion).
 
 ---
 
@@ -345,6 +373,11 @@ supply-chain-aip/
 ```bash
 git clone https://github.com/Kantamaniprakash/supply-chain-aip
 cd supply-chain-aip
+
+# Option A — uv (recommended, reproducible via uv.lock)
+uv sync
+
+# Option B — pip
 pip install -r requirements.txt
 
 # Run disruption risk model (XGBoost + SHAP)
