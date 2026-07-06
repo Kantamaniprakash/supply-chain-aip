@@ -1,0 +1,27 @@
+name: CI
+on:
+  push:
+    branches: ["master"]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      # The full requirements stack (torch, torch-geometric, pyspark, ...) is
+      # too heavy for CI. The smoke tests validate the source with ast.parse,
+      # so only lightweight lint/test tooling is installed here.
+      - name: Install tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff pytest
+      - name: Lint (non-blocking)
+        run: ruff check . --exit-zero
+      - name: Run smoke tests
+        run: pytest -q
