@@ -1,9 +1,11 @@
 # Supply Chain Disruption Intelligence Agent
 ### Palantir Foundry + AIP · Multi-Model ML · Graph Analytics · Monte Carlo Simulation · LLM-Powered Operational AI
 
+![CI](https://img.shields.io/github/actions/workflow/status/Kantamaniprakash/supply-chain-aip/ci.yml?branch=master&style=flat-square&label=CI)
+![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)
 ![Palantir Foundry](https://img.shields.io/badge/Palantir-Foundry-black?style=flat-square)
 ![AIP](https://img.shields.io/badge/Palantir-AIP-0070f3?style=flat-square)
-![Python](https://img.shields.io/badge/Python-3.11+-blue?style=flat-square&logo=python)
+![Python](https://img.shields.io/badge/Python-3.10%20%7C%203.11%20%7C%203.12-blue?style=flat-square&logo=python)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.3-EE4C2C?style=flat-square&logo=pytorch)
 ![XGBoost](https://img.shields.io/badge/XGBoost-2.0-orange?style=flat-square)
 ![PySpark](https://img.shields.io/badge/PySpark-3.5-E25A1C?style=flat-square&logo=apachespark)
@@ -290,6 +292,8 @@ RiskEvent
 | VaR estimation accuracy (backtested) | N/A (no prior model) | 94% within CI | — |
 | Annual avoided disruption cost (est.) | — | $8.7M | — |
 
+> **Disclaimer:** The figures above (detection lead time, triage time, stockout reduction, avoided cost, etc.) are **simulated/illustrative** — they are derived from the project's synthetic data and simulation pipeline to demonstrate the intended methodology, and are **not measured production outcomes**.
+
 ---
 
 ## Project Structure
@@ -339,7 +343,7 @@ supply-chain-aip/
 > All ML models, simulation, and graph analytics run fully standalone.
 
 ```bash
-git clone https://github.com/kantamaniprakash/supply-chain-aip
+git clone https://github.com/Kantamaniprakash/supply-chain-aip
 cd supply-chain-aip
 pip install -r requirements.txt
 
@@ -354,6 +358,9 @@ python graph/supplier_network_gnn.py
 
 # Run Monte Carlo VaR simulation
 python simulation/monte_carlo_var.py
+
+# Launch the interactive dashboard (Streamlit)
+streamlit run dashboard/app.py
 ```
 
 ---
