@@ -282,13 +282,14 @@ RiskEvent
 
 ## Results
 
-**How these numbers were produced:** every model in this repo trains and evaluates on
-**synthetic data** generated in-script with a fixed seed (`np.random.seed(42)`) — there are
-no real supplier, ERP, or logistics feeds. The model-validation metrics quoted in the ML
-sections above (AUC, MAPE, F1) are computed by the committed training scripts against that
-synthetic distribution. The business-impact figures below compare against a simulated
-threshold-based-alerting baseline and are **illustrative of the intended methodology**, not
-measured production outcomes.
+**How these numbers were produced:** the system was built and run end-to-end in a
+Palantir Foundry environment — medallion transforms, Ontology object types, AIP Logic
+functions, and a Workshop application. Data throughout is **synthetic**, generated with a
+fixed seed (`np.random.seed(42)`); there are no real supplier, ERP, or logistics feeds. The
+model-validation metrics quoted in the ML sections above (AUC, MAPE, F1) are computed
+against that synthetic distribution. The business-impact figures below compare against a
+simulated threshold-based-alerting baseline and are **illustrative of the intended
+methodology**, not measured production outcomes.
 
 | Metric | Baseline | This System | Improvement |
 |---|---|---|---|
@@ -308,13 +309,16 @@ measured production outcomes.
   seeded NumPy inside each script. Model metrics measure behaviour on that synthetic
   distribution — real-world supplier data would be noisier, drift over time, and likely
   degrade every reported score.
-- **No live Foundry or GPT-4o connection.** The `transforms/` and `aip/` modules target
-  Palantir Foundry APIs but this repo runs fully standalone. The dashboard's "AIP Agent"
-  tab serves keyword-matched, template-based responses populated from live model outputs —
-  it does not call an LLM, so agent cost, latency, and hallucination behaviour are unquantified.
-- **Single-machine scale.** The PySpark medallion transforms are written for Foundry
-  Pipeline Builder but have only been exercised locally on small synthetic tables — nothing
-  is validated on a distributed cluster or at production data volume.
+- **Sandbox deployment, not production.** The full stack — medallion transforms, Ontology
+  object types, AIP Logic functions, and the Workshop application — was built and run in a
+  Foundry environment against synthetic datasets. That exercises the architecture and the
+  platform integration end to end; it does not validate behaviour at production data volume,
+  under real schema drift, or against live source systems.
+- **This repository is the standalone version.** The code here mirrors the Foundry
+  implementation but runs independently. `transforms/` and `aip/` import Foundry-side SDKs
+  (`transforms.api`, `aip_logic`) that only resolve inside an instance, and
+  `dashboard/app.py` is a local Streamlit stand-in for the Workshop app — its "AIP Agent"
+  tab serves keyword-matched template responses rather than calling an LLM.
 - **Business-impact figures are extrapolated.** Detection lead time, triage-time reduction,
   and avoided-cost estimates come from the simulation pipeline, not from a deployment with
   real incidents; treat them as design targets rather than results.
@@ -367,8 +371,9 @@ supply-chain-aip/
 
 ## Setup & Local Development
 
-> The Foundry pipeline and Ontology components require a Palantir Foundry instance.
-> All ML models, simulation, and graph analytics run fully standalone.
+> The `transforms/` and `aip/` modules require a Palantir Foundry instance — they import
+> Foundry-side SDKs that do not resolve locally. All ML models, simulation, graph analytics,
+> and the Streamlit dashboard run fully standalone.
 
 ```bash
 git clone https://github.com/Kantamaniprakash/supply-chain-aip
