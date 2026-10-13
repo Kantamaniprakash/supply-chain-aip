@@ -2258,12 +2258,12 @@ wheels = [
 
 [[package]]
 name = "pyspark"
-version = "3.5.1"
+version = "3.5.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "py4j" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/73/e5/c9eb78cc982dafb7b5834bc5c368fe596216c8b9f7c4b4ffa104c4d2ab8f/pyspark-3.5.1.tar.gz", hash = "sha256:dd6569e547365eadc4f887bf57f153e4d582a68c4b490de475d55b9981664910", size = 316955685, upload-time = "2024-02-26T02:41:49.644Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/80/5a/3806f44eb47387e8af803508cdd6bbc0df784febf4dc010700be04a1ff89/pyspark-3.5.8.tar.gz", hash = "sha256:54cca0767b21b40e3953ad1d30f8601c53abf9cbda763653289cdcfcac52313c", size = 317817299, upload-time = "2026-01-15T11:46:14.487Z" }
 
 [[package]]
 name = "pytest"
@@ -2937,7 +2937,7 @@ requires-dist = [
     { name = "optuna", specifier = "==3.6.1" },
     { name = "pandas", specifier = "==2.2.2" },
     { name = "plotly", specifier = "==5.22.0" },
-    { name = "pyspark", specifier = "==3.5.1" },
+    { name = "pyspark", specifier = "==3.5.8" },
     { name = "scikit-learn", specifier = "==1.5.0" },
     { name = "scipy", specifier = "==1.13.0" },
     { name = "seaborn", specifier = "==0.13.2" },
